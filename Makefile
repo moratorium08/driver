@@ -42,7 +42,7 @@ check:
 	@echo "       default: $(TARGET_DEFAULT_DRIVER)"
 
 load:
-ifneq ($(shell lspci -v -s $(TARGET_PCI_BUS_ID) | grep $(TARGET_DEFAULT_DRIVER)),)
+ifneq ($(shell lspci -v -s $(TARGET_PCI_BUS_ID) | grep "in use" |  grep $(TARGET_DEFAULT_DRIVER)),)
 	sudo modprobe uio_pci_generic
 	sudo sh -c "echo '$(TARGET_PCI_VID) $(TARGET_PCI_DID)' > /sys/bus/pci/drivers/uio_pci_generic/new_id"
 	sudo sh -c "echo -n $(TARGET_PCI_BUS_ID) > /sys/bus/pci/drivers/$(TARGET_CURRENT_DRIVER)/unbind"
@@ -50,7 +50,7 @@ ifneq ($(shell lspci -v -s $(TARGET_PCI_BUS_ID) | grep $(TARGET_DEFAULT_DRIVER))
 endif
 
 restore:
-ifeq ($(shell lspci -v -s $(TARGET_PCI_BUS_ID) | grep $(TARGET_DEFAULT_DRIVER)),)
+ifeq ($(shell lspci -v -s $(TARGET_PCI_BUS_ID) | grep "in use" | grep $(TARGET_DEFAULT_DRIVER)),)
 	sudo modprobe $(TARGET_DEFAULT_DRIVER)
 	sudo sh -c "echo -n $(TARGET_PCI_BUS_ID) > /sys/bus/pci/drivers/$(TARGET_CURRENT_DRIVER)/unbind"
 	sudo sh -c "echo -n $(TARGET_PCI_BUS_ID) > /sys/bus/pci/drivers/$(TARGET_DEFAULT_DRIVER)/bind"
