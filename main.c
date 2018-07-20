@@ -48,6 +48,19 @@ void write_a_packet(char *buf) {
   }
 }
 
+void print_val(char x) {
+    if (x < 10) {
+        printf("%c", x + '0');
+    } else {
+        printf("%c", x + 'a' - 10);
+    }
+}
+
+void print_hex(unsigned char c) {
+    print_val(c / 0x10);
+    print_val(c % 0x10);
+}
+
 int main(int argc, char const *argv[]) {
   init_pci();
   init_dev();
@@ -124,16 +137,20 @@ int main(int argc, char const *argv[]) {
 
 
   // wait until NIC send packet physically 
-  char *buf = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDCEFGHIJKLMNOPQRSTUVWXYZABCDEFG";
-  write_a_packet(buf);
+  char buf[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDCEFGHIJKLMNOPQRSTUVWXYZABCDEFG";
+  for (int i = 0; i < 26; i++) {
+      printf("%d\n", i);
+      buf[0] = 'A' + i;
+      write_a_packet(buf);
+  }
 
   print_log("waiting read buffer");
   for (int i = 0; i < 1000; i++) {
-      int *bufr = read_a_packet();
-      for (int i = 0; i < 2048 / 4; i++) {
-          printf("%x", bufr[i]);
+      unsigned char *bufr = read_a_packet();
+      for (int i = 0; i < 64; i++) {
+          print_hex(bufr[i]);
       }
-      printf("\n");
+      printf("\n\n");
   }
   sleep(2);
   return 0;
