@@ -9,12 +9,45 @@
 #include "util.h"
 
 int ring_buffer_length = 8;
+char *buf_td;
+char *buf_rd; 
 
 typedef struct ring_buffer_entry {
     uint64_t addr;
     uint64_t flag;
 } ring_buffer_entry;
-    
+
+char *read_a_packet() {
+  int rx_head_prev = read_reg_wrapper(RDH_OFFSET);
+  int rx_head;
+
+  int rdt_tail_prev = read_reg_wrapper(RDT_OFFSET);
+  if (rdt_tail_prev == ring_buffer_length - 1) {
+      write_reg_wrapper(RDT_OFFSET, 0);
+  } else {
+      write_reg_wrapper(RDT_OFFSET, rdt_tail_prev + 1);
+  }
+  while(1) {
+      rx_head = read_reg_wrapper(RDH_OFFSET);
+      if (rx_head != rx_head_prev) break;
+  }
+  return buf_rd + 2048 * rdt_tail_prev;
+}
+
+void write_a_packet(char *buf) {
+  int tx_head_prev = read_reg_wrapper(TDH_OFFSET) % ring_buffer_length;
+  int tx_tail_prev = read_reg_wrapper(TDT_OFFSET);
+  for (int j = 0, i = 2048 * tx_head_prev; i < 2048 * (tx_head_prev + 1);
+          i++, j++) {
+      buf_td[i] = buf[j];
+  }
+  if (tx_tail_prev == ring_buffer_length - 1) {
+      write_reg_wrapper(TDT_OFFSET, 0);
+  } else {
+      write_reg_wrapper(TDT_OFFSET, tx_tail_prev + 1);
+  }
+}
+
 int main(int argc, char const *argv[]) {
   init_pci();
   init_dev();
@@ -80,37 +113,28 @@ int main(int argc, char const *argv[]) {
   }
   print_log("%d", addr2[0].cmd);
 
+
+  // setup buffer of rd and td
+  buf_td = ring_base_addr_td + 16 * ring_buffer_length;
+  buf_rd = ring_base_addr_rd + 16 * ring_buffer_length;
+
   enable_transmit();
   print_log("enable interrupts");
   enable_interrupts(0xFFFFFFFF);
-  usleep(1000);
+
 
   // wait until NIC send packet physically 
-  int tx_head_prev = read_reg_wrapper(TDT_OFFSET);
-  char *buf = ring_base_addr_td + 16 * ring_buffer_length;
-  for (int i = 0; i < 2048 * 16; i++) {
-      buf[i] = 'A' + (i % 26);
-  }
-  write_reg_wrapper(TDT_OFFSET, tx_head_prev + 1);
-  int tx_head = read_reg_wrapper(TDH_OFFSET);
+  char *buf = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDCEFGHIJKLMNOPQRSTUVWXYZABCDEFG";
+  write_a_packet(buf);
 
-
-  enable_receive();
-  int rdt_tail_prev = read_reg_wrapper(RDT_OFFSET);
-  write_reg_wrapper(RDT_OFFSET, rdt_tail_prev + 1);
-
-  int rx_head_prev = read_reg_wrapper(RDH_OFFSET);
-  int rx_head;
   print_log("waiting read buffer");
-  while(1) {
-      rx_head = read_reg_wrapper(RDH_OFFSET);
-      if (rx_head != rx_head_prev) break;
+  for (int i = 0; i < 1000; i++) {
+      int *bufr = read_a_packet();
+      for (int i = 0; i < 2048 / 4; i++) {
+          printf("%x", bufr[i]);
+      }
+      printf("\n");
   }
-  int *bufr = ring_base_addr_rd + 16 * ring_buffer_length;
-  for (int i = 0; i < 2048 / 4; i++) {
-      printf("%x", bufr[i]);
-  }
-  print_log("%d\n", rx_head);
   sleep(2);
   return 0;
 }
