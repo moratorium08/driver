@@ -74,6 +74,104 @@ typedef struct {
     };
 } Ethernet;
 
+void save_big_endian(unsigned long long val, unsigned char *p, int size) {
+    for (int i = 0;  i < size; i++) {
+        p[size - i - 1] = val % 0x100;
+        val = val / 0x100;
+    }
+}
+
+// if success then returns 0
+int gen_arp_packet(ARP *arp, unsigned char *raw) {
+    int hardware_size, protocol_size;
+    switch (arp->hardware_type){
+        case ARPHTYPE_ETHERNET:
+            hardware_size = 6;
+            break;
+        default:
+            return 4;
+    }
+
+    switch (arp->protocol_type){
+        case ARPPTYPE_IPv4:
+            protocol_size = 4;
+            break;
+        default:
+            return 5;
+    }
+
+    switch (arp->hardware_type) {
+        case ARPHTYPE_ETHERNET:
+            raw[0] = 0;
+            raw[1] = 1;
+            save_big_endian(arp->sender_mac_addr, raw + 8, hardware_size);
+            save_big_endian(
+                    arp->recver_mac_addr, raw + 8 + hardware_size + protocol_size,
+                    hardware_size);
+            break;
+        default:
+            return 1;
+    }
+
+    switch (arp->protocol_type) {
+        case ARPHTYPE_ETHERNET:
+            raw[2] = 0x8;
+            raw[3] = 0x00;
+            save_big_endian(arp->sender_ip_addr, raw + 8 + hardware_size, protocol_size);
+            save_big_endian(
+                    arp->recver_ip_addr, raw + 8 + 2 * hardware_size + protocol_size,
+                    protocol_size);
+            break;
+        default:
+            return 2;
+    }
+
+    switch (arp->operation) {
+        case ARPOPERATION_REQUEST:
+            raw[6] = 0;
+            raw[7] = 1;
+            break;
+        case ARPOPERATION_REPLY:
+            raw[6] = 0;
+            raw[7] = 2;
+            break;
+        default:
+            return 3;
+    }
+    save_big_endian(hardware_size, raw + 4, 1);
+    save_big_endian(protocol_size, raw + 5, 1);
+
+    return 0;
+}
+
+int gen_ethernet_packet(Ethernet *e, unsigned char *raw) {
+    save_big_endian(e->recver_mac, raw, 6);
+    save_big_endian(e->sender_mac, raw + 6, 6);
+    switch (e->type) {
+        case ETYPE_IPv4:
+            save_big_endian(0x800, raw + 12, 2);
+            break;
+        case ETYPE_ARP:
+            save_big_endian(0x806, raw + 12, 2);
+            break;
+        case ETYPE_RARP:
+            save_big_endian(0x8036, raw + 12, 2);
+            break;
+        default:
+            return 1;
+    }
+    int ret;
+    switch(e->type) {
+        case ETYPE_ARP:
+            if ((ret = gen_arp_packet(e->arp, raw + 14)) != 0) {
+                print_log("[error] ID: %d", ret);
+            }
+            break;
+        default:
+            return 2;
+    }
+    return 0;
+}
 
 ARP * parse_arp(unsigned char *raw) {
     ARP *arp = (ARP *)malloc(sizeof(ARP));
@@ -385,6 +483,8 @@ int main(int argc, char const *argv[]) {
 
 
   // wait until NIC send packet physically 
+  /* test send / recv */
+  /*
   char buf[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDCEFGHIJKLMNOPQRSTUVWXYZABCDEFG";
   for (int i = 0; i < 26; i++) {
       printf("%d\n", i);
@@ -400,6 +500,36 @@ int main(int argc, char const *argv[]) {
           print_packet(e);
           dump_data(bufr);
       }
+  }
+  */
+
+  // arp reqeuest / reply
+  while(1) {
+      unsigned char *bufr = read_a_packet();
+      Ethernet *e = parse_packet(bufr);
+      if(e->type == ETYPE_ARP) {
+          print_packet(e);
+          dump_data(bufr);
+      }
+      else {
+          continue;
+      }
+      mac_addr tmp = e->recver_mac;
+      e->recver_mac = e->sender_mac;
+      e->sender_mac = 0xf8cab84be88b;
+      e->arp->sender_mac_addr = e->sender_mac;
+      e->arp->recver_mac_addr = e->recver_mac;
+      e->arp->recver_ip_addr = e->arp->sender_ip_addr;
+      e->arp->sender_ip_addr = 0xc0a8000b;
+      e->arp->operation = ARPOPERATION_REPLY;
+
+      char buf[100];
+      memset(buf, 0, 100);
+      gen_ethernet_packet(e, buf);
+      print_packet(e);
+      write_a_packet(buf);
+      dump_data(buf);
+      printf("\n\n");
   }
   sleep(2);
   return 0;
