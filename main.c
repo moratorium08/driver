@@ -17,6 +17,95 @@ typedef struct ring_buffer_entry {
     uint64_t flag;
 } ring_buffer_entry;
 
+typedef enum {
+    ETYPE_IPv4,
+    ETYPE_ARP,
+    ETYPE_RARP,
+    ETYPE_UNKNOWN
+} EthernetType;
+
+typedef unsigned long long mac_addr;
+
+typedef struct {
+    mac_addr recver_mac;
+    mac_addr sender_mac;
+    EthernetType type;
+    char *data;
+} Ethernet;
+
+void parse_packet(Ethernet *e, unsigned char *raw) {
+    mac_addr recv = 0;
+    for (int i = 0; i < 6; i++) {
+        recv = recv * 0x100 + (unsigned int)raw[i];
+    }
+
+    mac_addr sender = 0;
+    for (int i = 0; i < 6; i++) {
+        sender = sender * 0x100 + (unsigned int)raw[6 + i];
+    }
+    int ttype = (unsigned int)raw[12] * 0x100 + (unsigned int)raw[13];
+    EthernetType t;
+    switch (ttype) {
+        case 0x0800:
+            t = ETYPE_IPv4;
+            break;
+        case 0x0806:
+            t = ETYPE_ARP;
+            break;
+        case 0x8036:
+            t = ETYPE_RARP;
+            break;
+        default:
+            t = ETYPE_UNKNOWN;
+    }
+    e->recver_mac = recv;
+    e->sender_mac = sender;
+    e->type = t;
+    e->data = raw + 14;
+}
+
+void print_packet(Ethernet *e) {
+    printf("RECEIVER: %llx", e->recver_mac);
+    printf("\tSENDER: %llx\n", e->sender_mac);
+    switch (e->type) {
+        case ETYPE_IPv4:
+            printf("Type: IPv4\n");
+            break;
+        case ETYPE_ARP:
+            printf("Type: Arp\n");
+            break;
+        case ETYPE_RARP:
+            printf("Type: RArp\n");
+            break;
+        default:
+            printf("Type: Unknown\n");
+    }
+}
+
+void print_val(char x) {
+    if (x < 10) {
+        printf("%c", x + '0');
+    } else {
+        printf("%c", x + 'a' - 10);
+    }
+}
+
+void print_hex(unsigned char c) {
+    print_val(c / 0x10);
+    print_val(c % 0x10);
+}
+
+void dump_data(unsigned char *bufr) {
+      for (int i = 0; i < 64; i++) {
+          print_hex(bufr[i]);
+          printf(" ");
+          if (i % 8 == 7) {
+              printf("\n");
+          }
+      }
+      printf("\n\n");
+}
+
 char *read_a_packet() {
   int rx_head_prev = read_reg_wrapper(RDH_OFFSET);
   int rx_head;
@@ -48,18 +137,7 @@ void write_a_packet(char *buf) {
   }
 }
 
-void print_val(char x) {
-    if (x < 10) {
-        printf("%c", x + '0');
-    } else {
-        printf("%c", x + 'a' - 10);
-    }
-}
 
-void print_hex(unsigned char c) {
-    print_val(c / 0x10);
-    print_val(c % 0x10);
-}
 
 int main(int argc, char const *argv[]) {
   init_pci();
@@ -147,10 +225,12 @@ int main(int argc, char const *argv[]) {
   print_log("waiting read buffer");
   for (int i = 0; i < 1000; i++) {
       unsigned char *bufr = read_a_packet();
-      for (int i = 0; i < 64; i++) {
-          print_hex(bufr[i]);
+      Ethernet e;
+      parse_packet(&e, bufr);
+      if (e.type == ETYPE_ARP) {
+          print_packet(&e);
+          dump_data(bufr);
       }
-      printf("\n\n");
   }
   sleep(2);
   return 0;
