@@ -9,9 +9,12 @@
 #include "reg.h"
 #include "util.h"
 
-int ring_buffer_length = 8;
+int ring_buffer_length = 150;
+int delta_dt = 20;
 char *buf_td;
 char *buf_rd; 
+Tdesc ring_base_addr_rd_p;
+Tdesc ring_base_addr_td_p;
 
 typedef struct ring_buffer_entry {
     uint64_t addr;
@@ -65,11 +68,51 @@ typedef struct {
 } ARP;
 
 typedef struct {
+    unsigned int sender_port;
+    unsigned int recver_port;
+    unsigned int length;
+    char *data;
+} UDP;
+
+typedef enum {
+    IPV4_SERVICE_PRIORITY_0   = 1,
+    IPV4_SERVICE_PRIORITY_1   = 1 << 1,
+    IPV4_SERVICE_PRIORITY_2   = 1 << 2,
+    IPV4_SERVICE_DELAY        = 1 << 3,
+    IPV4_SERVICE_TRANSPORT    = 1 << 4,
+    IPV4_SERVICE_RELIABILITY  = 1 << 5,
+    IPV4_SERVICE_RESERVED_0   = 1 << 6,
+    IPV4_SERVICE_RESERVED_1   = 1 << 7,
+} IPV4_SERVICE;
+
+typedef enum {
+    IPV4_FLAG_RESERVED = 1,
+    IPV4_FLAG_INHIVITED = 1 << 1,
+    IPV4_FLAG_CONTINUATION = 1 << 2
+} IPV4_FLAG;
+
+typedef enum {
+    IP_PROTOCOL_UDP,
+    IP_PROTOCOL_UNKNOWN
+} IP_PROTOCOL;
+
+typedef struct {
+    unsigned long long sender_addr;
+    unsigned long long recver_addr;
+    IP_PROTOCOL protocol;
+    union {
+        UDP *udp;
+    };
+} IPv4;
+
+
+typedef struct {
     mac_addr recver_mac;
     mac_addr sender_mac;
     EthernetType type;
     union {
         ARP *arp;
+        IPv4 *ipv4;
         char *data;
     };
 } Ethernet;
@@ -79,6 +122,34 @@ void save_big_endian(unsigned long long val, unsigned char *p, int size) {
         p[size - i - 1] = val % 0x100;
         val = val / 0x100;
     }
+}
+
+void print_val(char x) {
+    if (x < 10) {
+        printf("%c", x + '0');
+    } else {
+        printf("%c", x + 'a' - 10);
+    }
+}
+
+void print_hex(unsigned char c) {
+    print_val(c / 0x10);
+    print_val(c % 0x10);
+}
+
+void dump_data_size(unsigned char *bufr, int s) {
+      for (int i = 0; i < s; i++) {
+          print_hex(bufr[i]);
+          printf(" ");
+          if (i % 8 == 7) {
+              printf("\n");
+          }
+      }
+      printf("\n\n");
+}
+
+void dump_data(unsigned char *bufr) {
+    dump_data_size(bufr, 64);
 }
 
 // if success then returns 0
@@ -252,6 +323,58 @@ ARP * parse_arp(unsigned char *raw) {
     return arp;
 }
 
+UDP *parse_udp(unsigned char *raw) {
+    UDP *udp = (UDP *)malloc(sizeof(UDP));
+    memset(udp,  0, sizeof(UDP));
+    unsigned int addr = 0;
+    for (int i = 0; i < 2; i++) {
+        addr = addr * 0x100 + raw[0 + i];
+    }
+    udp->sender_port = addr;
+    
+    addr = 0;
+    for (int i = 0; i < 2; i++) {
+        addr = addr * 0x100 + raw[2 + i];
+    }
+    udp->sender_port = addr;
+    addr = 0;
+    for (int i = 0; i < 2; i++) {
+        addr = addr * 0x100 + raw[4 + i];
+    }
+    udp->length = addr;
+    udp->data = raw + 4;
+    return;
+}
+
+IPv4 *parse_ipv4(unsigned char *raw) {
+    IPv4 *ipv4 = (IPv4*)malloc(sizeof(IPv4));
+    memset(ipv4, 0, sizeof(IPv4));
+
+    unsigned long long addr = 0;
+    for (int i = 0; i < 4; i++) {
+        addr = addr * 0x100 + raw[12 + i];
+    }
+    ipv4->sender_addr = addr;
+
+    addr = 0;
+    for (int i = 0; i < 4; i++) {
+        addr = addr * 0x100 + raw[16 + i];
+    }
+    ipv4->recver_addr = addr;
+    
+    addr = 0;
+    for (int i = 0; i < 1; i++) {
+        addr = addr * 0x100 + raw[9 + i];
+    }
+    if (addr == 17) {
+        ipv4->protocol = IP_PROTOCOL_UDP;
+    } else {
+        ipv4->protocol = IP_PROTOCOL_UNKNOWN;
+    }
+    ipv4->udp = parse_udp(raw + 24);
+    return ipv4;
+}
+
 Ethernet * parse_packet(unsigned char *raw) {
     Ethernet *e = (Ethernet *)malloc(sizeof(Ethernet));
     memset(e, 0, sizeof(Ethernet));
@@ -286,10 +409,35 @@ Ethernet * parse_packet(unsigned char *raw) {
         case ETYPE_ARP:
             e->arp = parse_arp(raw + 14);
             break;
+        case ETYPE_IPv4:
+            e->ipv4 = parse_ipv4(raw + 14);
+            break;
         default:
             e->data = raw + 14;
     }
     return e;
+}
+
+void print_udp_packet(UDP *udp) {
+    printf("Sender port: %llx\n",  udp->sender_port);
+    printf("Recver port: %llx\n",  udp->recver_port);
+    for (int i = 0; i < 10; i++) {
+        printf("%c", udp->data[i]);
+    }
+    printf("\n");
+} 
+
+void print_ipv4_packet(IPv4 *ipv4) {
+    printf("Sender addr: %llx\n",  ipv4->sender_addr);
+    printf("Recver addr: %llx\n",  ipv4->recver_addr);
+    switch (ipv4->protocol) {
+        case IP_PROTOCOL_UDP:
+            printf("Protocol: UDP\n");
+            print_udp_packet(ipv4->udp);
+            break;
+        default:
+            printf("Protocol: Unknown\n");
+    }
 }
 
 void print_arp_packet(ARP *arp) {
@@ -337,6 +485,7 @@ void print_packet(Ethernet *e) {
     switch (e->type) {
         case ETYPE_IPv4:
             printf("Type: IPv4\n");
+            print_ipv4_packet(e->ipv4);
             break;
         case ETYPE_ARP:
             printf("Type: ARP\n");
@@ -350,59 +499,41 @@ void print_packet(Ethernet *e) {
     }
 }
 
-void print_val(char x) {
-    if (x < 10) {
-        printf("%c", x + '0');
-    } else {
-        printf("%c", x + 'a' - 10);
-    }
-}
 
-void print_hex(unsigned char c) {
-    print_val(c / 0x10);
-    print_val(c % 0x10);
-}
-
-void dump_data(unsigned char *bufr) {
-      for (int i = 0; i < 64; i++) {
-          print_hex(bufr[i]);
-          printf(" ");
-          if (i % 8 == 7) {
-              printf("\n");
-          }
-      }
-      printf("\n\n");
-}
 
 char *read_a_packet() {
   int rx_head_prev = read_reg_wrapper(RDH_OFFSET);
   int rx_head;
 
   int rdt_tail_prev = read_reg_wrapper(RDT_OFFSET);
-  if (rdt_tail_prev == ring_buffer_length - 1) {
-      write_reg_wrapper(RDT_OFFSET, 0);
-  } else {
-      write_reg_wrapper(RDT_OFFSET, rdt_tail_prev + 1);
+
+  // 怠惰
+  while ((rx_head_prev - 1) == rdt_tail_prev || 
+          (rx_head_prev == 0 && rdt_tail_prev == (ring_buffer_length - 1))) {
+     rx_head_prev = read_reg_wrapper(RDH_OFFSET);
   }
+
+  int next_rx = (rx_head_prev + delta_dt) % ring_buffer_length;
+  write_reg_wrapper(RDT_OFFSET, next_rx);
+      
   while(1) {
       rx_head = read_reg_wrapper(RDH_OFFSET);
       if (rx_head != rx_head_prev) break;
   }
-  return buf_rd + 2048 * rdt_tail_prev;
+  return buf_rd + 2048 * rx_head_prev;
 }
 
 void write_a_packet(char *buf) {
   int tx_head_prev = read_reg_wrapper(TDH_OFFSET) % ring_buffer_length;
   int tx_tail_prev = read_reg_wrapper(TDT_OFFSET);
+
   for (int j = 0, i = 2048 * tx_head_prev; i < 2048 * (tx_head_prev + 1);
           i++, j++) {
       buf_td[i] = buf[j];
   }
-  if (tx_tail_prev == ring_buffer_length - 1) {
-      write_reg_wrapper(TDT_OFFSET, 0);
-  } else {
-      write_reg_wrapper(TDT_OFFSET, tx_tail_prev + 1);
-  }
+
+  int next_tx = (tx_head_prev + delta_dt) % ring_buffer_length;
+  write_reg_wrapper(TDT_OFFSET, next_tx);
 }
 
 
@@ -438,6 +569,7 @@ int main(int argc, char const *argv[]) {
 
   uint64_t ring_buf_base = ring_base_paddr_rd + 16 * ring_buffer_length;
   Rdesc addr = (Tdesc)ring_base_addr_rd;
+  ring_base_addr_rd_p = addr;
   for (int i = 0; i < ring_buffer_length; i++) {
       addr[i].addr = ring_buf_base + i * 2048;
       addr[i].length = 64;
@@ -460,6 +592,7 @@ int main(int argc, char const *argv[]) {
 
   ring_buf_base = ring_base_paddr_td + 16 * ring_buffer_length;
   Tdesc addr2 = (Tdesc)ring_base_addr_td;
+  ring_base_addr_td_p = addr2;
   for (int i = 0; i < ring_buffer_length; i++) {
       addr2[i].addr = ring_buf_base + i * 2048;
       addr2[i].length = 64;
@@ -470,7 +603,6 @@ int main(int argc, char const *argv[]) {
           (0 << 5) | (0 << 6) | (0 << 7);
       addr2[i].special = 0;
   }
-  print_log("%d", addr2[0].cmd);
 
 
   // setup buffer of rd and td
@@ -484,12 +616,19 @@ int main(int argc, char const *argv[]) {
 
   // wait until NIC send packet physically 
   /* test send / recv */
+  
   /*
   char buf[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDCEFGHIJKLMNOPQRSTUVWXYZABCDEFG";
-  for (int i = 0; i < 26; i++) {
+  for (int i = 0; i < 8; i++) {
       printf("%d\n", i);
       buf[0] = 'A' + i;
       write_a_packet(buf);
+      sleep(1);
+  }
+  for (int i = 0; i < 8; i++) {
+      printf("%d\n", i);
+      write_a_packet(buf);
+      sleep(1);
   }
 
   print_log("waiting read buffer");
@@ -500,8 +639,8 @@ int main(int argc, char const *argv[]) {
           print_packet(e);
           dump_data(bufr);
       }
-  }
-  */
+  }*/
+  
 
   // arp reqeuest / reply
   while(1) {
@@ -510,27 +649,32 @@ int main(int argc, char const *argv[]) {
       if(e->type == ETYPE_ARP) {
           print_packet(e);
           dump_data(bufr);
+          mac_addr tmp = e->recver_mac;
+          e->recver_mac = e->sender_mac;
+          e->sender_mac = 0xf8cab84be88b;
+          e->arp->sender_mac_addr = e->sender_mac;
+          e->arp->recver_mac_addr = e->recver_mac;
+          e->arp->recver_ip_addr = e->arp->sender_ip_addr;
+          e->arp->sender_ip_addr = 0xc0a8000b;
+          e->arp->operation = ARPOPERATION_REPLY;
+
+          char buf[100];
+          memset(buf, 0, 100);
+          gen_ethernet_packet(e, buf);
+          print_packet(e);
+          write_a_packet(buf);
+          dump_data(buf);
+          printf("\n\n");
+      }
+      else if (e->type == ETYPE_IPv4) {
+          print_packet(e);
       }
       else {
+          print_packet(e);
           continue;
       }
-      mac_addr tmp = e->recver_mac;
-      e->recver_mac = e->sender_mac;
-      e->sender_mac = 0xf8cab84be88b;
-      e->arp->sender_mac_addr = e->sender_mac;
-      e->arp->recver_mac_addr = e->recver_mac;
-      e->arp->recver_ip_addr = e->arp->sender_ip_addr;
-      e->arp->sender_ip_addr = 0xc0a8000b;
-      e->arp->operation = ARPOPERATION_REPLY;
-
-      char buf[100];
-      memset(buf, 0, 100);
-      gen_ethernet_packet(e, buf);
-      print_packet(e);
-      write_a_packet(buf);
-      dump_data(buf);
-      printf("\n\n");
   }
+
   sleep(2);
   return 0;
 }
