@@ -100,8 +100,10 @@ typedef struct {
     unsigned long long sender_addr;
     unsigned long long recver_addr;
     IP_PROTOCOL protocol;
+    int length;
     union {
         UDP *udp;
+        char *data;
     };
 } IPv4;
 
@@ -150,6 +152,46 @@ void dump_data_size(unsigned char *bufr, int s) {
 
 void dump_data(unsigned char *bufr) {
     dump_data_size(bufr, 64);
+}
+
+int gen_udp_packet(UDP *udp, unsigned char *raw) {
+    save_big_endian(udp->sender_port, raw, 2);
+    save_big_endian(udp->recver_port, raw + 2, 2);
+    save_big_endian(udp->length, raw + 4, 2);
+
+    raw[6] = 0;
+    raw[7] = 0;
+
+    memcpy(raw + 8, udp->data, udp->length - 8);
+    return 0;
+}
+
+int gen_ipv4_packet(IPv4 *ipv4, unsigned char *raw) {
+    raw[0] = 0x45;
+    raw[1] = 0x00;
+    save_big_endian(ipv4->length, raw + 2, 2);
+    raw[4] = 0xde;
+    raw[5] = 0xad;
+    raw[6] = 0x00;
+    raw[7] = 0x00;
+    raw[8] = 0x40;
+    switch (ipv4->protocol) {
+        case IP_PROTOCOL_UDP:
+            raw[9] = 17;
+            if(gen_udp_packet(ipv4->udp, raw + 24)) return 2;
+            break;
+        default:
+            return 1;
+    }
+    raw[10] = 0;
+    raw[11] = 0;
+    save_big_endian(ipv4->sender_addr, raw + 12, 4);
+    save_big_endian(ipv4->recver_addr, raw + 16, 4);
+    raw[20] = 0;
+    raw[21] = 0;
+    raw[22] = 0;
+    raw[23] = 0;
+    return 0;
 }
 
 // if success then returns 0
@@ -235,6 +277,11 @@ int gen_ethernet_packet(Ethernet *e, unsigned char *raw) {
     switch(e->type) {
         case ETYPE_ARP:
             if ((ret = gen_arp_packet(e->arp, raw + 14)) != 0) {
+                print_log("[error] ID: %d", ret);
+            }
+            break;
+        case ETYPE_IPv4:
+            if ((ret = gen_ipv4_packet(e->ipv4, raw + 14)) != 0) {
                 print_log("[error] ID: %d", ret);
             }
             break;
@@ -342,7 +389,7 @@ UDP *parse_udp(unsigned char *raw) {
         addr = addr * 0x100 + raw[4 + i];
     }
     udp->length = addr;
-    udp->data = raw + 4;
+    udp->data = raw + 8;
     return;
 }
 
@@ -366,12 +413,22 @@ IPv4 *parse_ipv4(unsigned char *raw) {
     for (int i = 0; i < 1; i++) {
         addr = addr * 0x100 + raw[9 + i];
     }
+
+
     if (addr == 17) {
         ipv4->protocol = IP_PROTOCOL_UDP;
+        ipv4->udp = parse_udp(raw + 20);
     } else {
         ipv4->protocol = IP_PROTOCOL_UNKNOWN;
+        ipv4->data = raw + 20;
     }
-    ipv4->udp = parse_udp(raw + 24);
+
+    addr = 0;
+    for (int i = 0; i < 2; i++) {
+        addr = addr * 0x100 + raw[2 + i];
+    }
+    ipv4->length = addr;
+
     return ipv4;
 }
 
@@ -668,6 +725,22 @@ int main(int argc, char const *argv[]) {
       }
       else if (e->type == ETYPE_IPv4) {
           print_packet(e);
+          e->recver_mac = e->sender_mac;
+          e->sender_mac = 0xf8cab84be88b;
+
+          unsigned long long tmp = e->ipv4->sender_addr;
+          e->ipv4->sender_addr = e->ipv4->recver_addr;
+          e->ipv4->recver_addr = tmp;
+          int tmp2 = e->ipv4->udp->sender_port;
+          e->ipv4->udp->sender_port = e->ipv4->udp->recver_port ;
+          e->ipv4->udp->recver_port = tmp;
+
+          char buf[100];
+          memset(buf, 0, 100);
+          gen_ethernet_packet(e, buf);
+          write_a_packet(buf);
+          dump_data(buf);
+          printf("\n\n");
       }
       else {
           print_packet(e);
