@@ -16,8 +16,7 @@ char *buf_rd;
 Tdesc ring_base_addr_rd_p;
 Tdesc ring_base_addr_td_p;
 
-typedef struct ring_buffer_entry {
-    uint64_t addr;
+typedef struct ring_buffer_entry { uint64_t addr;
     uint64_t flag;
 } ring_buffer_entry;
 
@@ -178,7 +177,7 @@ int gen_ipv4_packet(IPv4 *ipv4, unsigned char *raw) {
     switch (ipv4->protocol) {
         case IP_PROTOCOL_UDP:
             raw[9] = 17;
-            if(gen_udp_packet(ipv4->udp, raw + 24)) return 2;
+            if(gen_udp_packet(ipv4->udp, raw + 20)) return 2;
             break;
         default:
             return 1;
@@ -187,10 +186,10 @@ int gen_ipv4_packet(IPv4 *ipv4, unsigned char *raw) {
     raw[11] = 0;
     save_big_endian(ipv4->sender_addr, raw + 12, 4);
     save_big_endian(ipv4->recver_addr, raw + 16, 4);
-    raw[20] = 0;
+    /*raw[20] = 0;
     raw[21] = 0;
     raw[22] = 0;
-    raw[23] = 0;
+    raw[23] = 0;*/
     return 0;
 }
 
@@ -370,6 +369,11 @@ ARP * parse_arp(unsigned char *raw) {
     return arp;
 }
 
+void free_arp(ARP *arp) {
+}
+
+
+
 UDP *parse_udp(unsigned char *raw) {
     UDP *udp = (UDP *)malloc(sizeof(UDP));
     memset(udp,  0, sizeof(UDP));
@@ -383,15 +387,20 @@ UDP *parse_udp(unsigned char *raw) {
     for (int i = 0; i < 2; i++) {
         addr = addr * 0x100 + raw[2 + i];
     }
-    udp->sender_port = addr;
+    udp->recver_port = addr;
     addr = 0;
     for (int i = 0; i < 2; i++) {
         addr = addr * 0x100 + raw[4 + i];
     }
     udp->length = addr;
     udp->data = raw + 8;
-    return;
+    return udp;
 }
+
+void free_udp(UDP *udp) {
+    free(udp);
+}
+
 
 IPv4 *parse_ipv4(unsigned char *raw) {
     IPv4 *ipv4 = (IPv4*)malloc(sizeof(IPv4));
@@ -478,7 +487,9 @@ Ethernet * parse_packet(unsigned char *raw) {
 void print_udp_packet(UDP *udp) {
     printf("Sender port: %llx\n",  udp->sender_port);
     printf("Recver port: %llx\n",  udp->recver_port);
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 30; i++) {
+        if (udp->data[i] == '\n') break;
+        if (udp->data[i] == '\0') break;
         printf("%c", udp->data[i]);
     }
     printf("\n");
@@ -629,7 +640,7 @@ int main(int argc, char const *argv[]) {
   ring_base_addr_rd_p = addr;
   for (int i = 0; i < ring_buffer_length; i++) {
       addr[i].addr = ring_buf_base + i * 2048;
-      addr[i].length = 64;
+      addr[i].length = 512;
   }
 
   enable_receive();
@@ -652,7 +663,7 @@ int main(int argc, char const *argv[]) {
   ring_base_addr_td_p = addr2;
   for (int i = 0; i < ring_buffer_length; i++) {
       addr2[i].addr = ring_buf_base + i * 2048;
-      addr2[i].length = 64;
+      addr2[i].length = 512;
       addr2[i].cso = 0;
       addr2[i].css = 0;
       addr2[i].sta = 0;
@@ -731,15 +742,19 @@ int main(int argc, char const *argv[]) {
           unsigned long long tmp = e->ipv4->sender_addr;
           e->ipv4->sender_addr = e->ipv4->recver_addr;
           e->ipv4->recver_addr = tmp;
-          int tmp2 = e->ipv4->udp->sender_port;
-          e->ipv4->udp->sender_port = e->ipv4->udp->recver_port ;
-          e->ipv4->udp->recver_port = tmp;
+
+          unsigned int tmp2 = e->ipv4->udp->sender_port;
+          e->ipv4->udp->sender_port = e->ipv4->udp->recver_port;
+          e->ipv4->udp->recver_port = tmp2;
+
 
           char buf[100];
           memset(buf, 0, 100);
           gen_ethernet_packet(e, buf);
           write_a_packet(buf);
+          dump_data(bufr);
           dump_data(buf);
+          print_packet(e);
           printf("\n\n");
       }
       else {
