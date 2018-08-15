@@ -539,9 +539,10 @@ int gen_dhcp_packet(DHCP *d, byte * buf) {
     save_big_endian(0x0f04, options + 31, 2);
     save_big_endian(0x686f6765, options + 33, 4);
 
+    save_big_endian(0x3604, options + 37, 2);
+    save_big_endian(IPADDR, options + 39, 4);
 
-
-    save_big_endian(0xff,  options + 37, 1);
+    save_big_endian(0xff,  options + 43, 1);
     return 28 + 16 + 64 + 128 + 64;
 }
 
@@ -932,6 +933,8 @@ int main(int argc, char const *argv[]) {
       }
       else if (e->type == ETYPE_IPv4) {
           print_packet(e);
+
+
           char buf[1024];
           memset(buf, 0, 1024);
 
@@ -945,6 +948,7 @@ int main(int argc, char const *argv[]) {
           e->ipv4->udp->sender_port = e->ipv4->udp->recver_port;
           e->ipv4->udp->recver_port = tmp2;
 
+
           UDP *udp = e->ipv4->udp;
           if (udp->recver_port == 68) {
               DHCP *dhcp = parse_dhcp(udp->data);
@@ -955,27 +959,35 @@ int main(int argc, char const *argv[]) {
               dump_data(bufr);
               switch(dhcp->type) {
                   case DHCPDiscover:
+                      printf("Discover!!\n");
                       d = handle_discover(dhcp);
-                      int size = gen_dhcp_packet(d, dhcp_data);
-                      e->ipv4->udp->length = size;
-                      e->ipv4->udp->data = dhcp_data;
-
-                      e->ipv4->length = size + 36;
-
-                      print_dhcp(parse_dhcp(dhcp_data));
-
-                      e->ipv4->sender_addr = IPADDR;
-                      e->ipv4->recver_addr = 0xffffffff;
-
-                      gen_ethernet_packet(e, buf);
-                      print_packet(e);
-                      write_a_packet(buf);
-                      dump_data(buf);
+                      break;
+                  case DHCPRequest:
+                      printf("Request!!\n");
+                      d = handle_request(dhcp);
                       break;
                   default:
-                      printf("yata-\n");
-                      break;
+                      continue;
               }
+              if (d == NULL) {
+                  printf("oopps");
+                  continue;
+              }
+              int size = gen_dhcp_packet(d, dhcp_data);
+              e->ipv4->udp->length = size;
+              e->ipv4->udp->data = dhcp_data;
+
+              e->ipv4->length = size + 36;
+
+              print_dhcp(parse_dhcp(dhcp_data));
+
+              e->ipv4->sender_addr = IPADDR;
+              e->ipv4->recver_addr = 0xffffffff;
+
+              gen_ethernet_packet(e, buf);
+              print_packet(e);
+              write_a_packet(buf);
+              dump_data(buf);
           } else {
               gen_ethernet_packet(e, buf);
               write_a_packet(buf);
