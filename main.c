@@ -11,6 +11,7 @@
 
 int ring_buffer_length = 150;
 int delta_dt = 20;
+int entry_size = 512;
 char *buf_td;
 char *buf_rd; 
 Tdesc ring_base_addr_rd_p;
@@ -142,7 +143,7 @@ void dump_data_size(unsigned char *bufr, int s) {
       for (int i = 0; i < s; i++) {
           print_hex(bufr[i]);
           printf(" ");
-          if (i % 8 == 7) {
+          if (i % 24 == 23) {
               printf("\n");
           }
       }
@@ -150,7 +151,7 @@ void dump_data_size(unsigned char *bufr, int s) {
 }
 
 void dump_data(unsigned char *bufr) {
-    dump_data_size(bufr, 64);
+    dump_data_size(bufr, entry_size);
 }
 
 int gen_udp_packet(UDP *udp, unsigned char *raw) {
@@ -164,6 +165,25 @@ int gen_udp_packet(UDP *udp, unsigned char *raw) {
     memcpy(raw + 8, udp->data, udp->length - 8);
     return 0;
 }
+
+int ipv4_add(unsigned int x, unsigned int y) {
+    int z = x + y;
+    if (z > 0xffff) {
+        return ipv4_add(z % 0x10000, z / 0x10000);
+    } else {
+        return z;
+    }
+}
+
+int calc_ipv4_checksum(unsigned char *raw) {
+    int tmp = 0;
+    for (int i = 0; i < 10; i++) {
+        unsigned int x = 0x100 * raw[2 * i] + raw[2 * i + 1];
+        tmp = ipv4_add(tmp, x);
+    }
+    return tmp ^ 0xffff;
+}
+
 
 int gen_ipv4_packet(IPv4 *ipv4, unsigned char *raw) {
     raw[0] = 0x45;
@@ -186,10 +206,8 @@ int gen_ipv4_packet(IPv4 *ipv4, unsigned char *raw) {
     raw[11] = 0;
     save_big_endian(ipv4->sender_addr, raw + 12, 4);
     save_big_endian(ipv4->recver_addr, raw + 16, 4);
-    /*raw[20] = 0;
-    raw[21] = 0;
-    raw[22] = 0;
-    raw[23] = 0;*/
+    int checksum = calc_ipv4_checksum(raw);
+    save_big_endian(checksum, raw + 10, 2);
     return 0;
 }
 
@@ -405,6 +423,11 @@ void free_udp(UDP *udp) {
 IPv4 *parse_ipv4(unsigned char *raw) {
     IPv4 *ipv4 = (IPv4*)malloc(sizeof(IPv4));
     memset(ipv4, 0, sizeof(IPv4));
+
+    unsigned int checksum = raw[10] * 0x100 + raw[11];
+    raw[10] = 0;
+    raw[11] = 0;
+    printf("checksum: %x, %x\n", checksum, calc_ipv4_checksum(raw));
 
     unsigned long long addr = 0;
     for (int i = 0; i < 4; i++) {
@@ -640,7 +663,7 @@ int main(int argc, char const *argv[]) {
   ring_base_addr_rd_p = addr;
   for (int i = 0; i < ring_buffer_length; i++) {
       addr[i].addr = ring_buf_base + i * 2048;
-      addr[i].length = 512;
+      addr[i].length = entry_size;
   }
 
   enable_receive();
@@ -663,7 +686,7 @@ int main(int argc, char const *argv[]) {
   ring_base_addr_td_p = addr2;
   for (int i = 0; i < ring_buffer_length; i++) {
       addr2[i].addr = ring_buf_base + i * 2048;
-      addr2[i].length = 512;
+      addr2[i].length = entry_size;
       addr2[i].cso = 0;
       addr2[i].css = 0;
       addr2[i].sta = 0;
