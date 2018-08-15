@@ -1,3 +1,19 @@
+# 課題A
+
+ぼくのPCの情報である。このMac Addressは確かにSenderとして書かれているものに一致する
+
+```
+en5: flags=8963<UP,BROADCAST,SMART,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1500
+	options=4<VLAN_MTU>
+	ether 28:37:37:00:15:9f
+	inet 192.168.0.10 netmask 0xffffff00 broadcast 192.168.0.255
+	inet6 fe80::886:8421:d4e6:fb1c%en5 prefixlen 64 secured scopeid 0xf
+	inet 169.254.106.142 netmask 0xffff0000 broadcast 169.254.255.255
+	nd6 options=201<PERFORMNUD,DAD>
+	media: autoselect (10baseT/UTP <full-duplex,flow-control>)
+	status: active
+```
+
 # 課題B
 
 仕様書によれば、Receive Descriptor Status Fieldが、処理後にビットが変化する。Statusフィールドの0bit 目である、DD bitは、パケットが完全にメインメモリに入ったタイミングで立つと書いてある。
@@ -8,6 +24,25 @@
 
 現状は、Ring Bufferを動くようにして、ring bufferのサイズ以上のパケットが受け取れ、送信できるようにしたうえで、課題Dとして、Arp Replyを返すようなプログラムを実装した。
 
-kadai-d-1.png, kadai-d-2.png はそれぞれ、arp-scanの結果と、パケットを受け取っていることを表すドライバの標準出力である。
+kadai-d.pngはarp-scanの結果である
 
 また、UDPパケットを受け取って解釈するコードを書いた。この様子はkadai-e-1.png, kadai-e-2.pngにある。
+
+上に加えてUDPパケットをechoで返すようにした（UDPの送信）。
+
+さらにDHCPプロトコルをハンドリングし、IPアドレスのリースを行うような処理をした。すなわち
+
+* UDPの67番ポートを監視し、ここにきたDHCPパケットを検知する
+* DHCPパケットを解析し、Discoverならば、プールから新しくIPAddrを予約し、リースをOfferする
+* Requestが飛んできたとき、ほしいとするアドレスと予約時のMacAddrが一致すれば、Ackする
+
+以上の処理により、実際にDHCPのプロトコルのやり取りが可能となった。このプロトコルのやりとりの結果は、dhcp_handling.pcapにそのプロトコルのやりとりをしたものを添付し、結果としてifconfigが渡されたIPアドレス(192.168.0.15)になったことを示す スクリーンショット kadai-e-3.pngを添付した。
+
+この再現は単にハブを用意し、二台のPCを用意して、片方でこのプログラムを起動しもう一方をただつなぐだけで再現できる。
+
+--------------------------
+最新のソースコードは以下
+
+https://github.com/moratorium08/driver
+
+にあるので、もしよければこちらを確認していただけると助かります。
