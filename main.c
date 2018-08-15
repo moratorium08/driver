@@ -3,23 +3,61 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include "dhcp.h"
 #include "desc.h"
 #include "init.h"
 #include "mem.h"
 #include "reg.h"
 #include "util.h"
 
+#define IPADDR 0xc0a8000b
+#define MACADDR 0xf8cab84be88bull
+
 int ring_buffer_length = 150;
 int delta_dt = 20;
-int entry_size = 512;
+int entry_size = 350;
 char *buf_td;
-char *buf_rd; 
+char *buf_rd;
 Tdesc ring_base_addr_rd_p;
 Tdesc ring_base_addr_td_p;
 
 typedef struct ring_buffer_entry { uint64_t addr;
     uint64_t flag;
 } ring_buffer_entry;
+
+// --- util ---
+// big endians
+byte read_byte(byte *raw) {
+    return raw[0];
+}
+
+unsigned int read_2bytes(byte *raw) {
+    return read_byte(raw) * 0x100 + read_byte(raw + 1);
+}
+
+unsigned int read_4bytes(byte *raw) {
+    unsigned int x = 0;
+    for (int i = 0; i < 4; i++) {
+        x *= 0x100;
+        x += read_byte(raw + i);
+    }
+    return x;
+}
+unsigned long long read_bytes(byte *raw, int n) {
+    unsigned long long x = 0;
+    for (int i = 0; i < n; i++) {
+        x *= 0x100;
+        x += read_byte(raw + i);
+    }
+    return x;
+}
+unsigned long long read_6bytes(byte *raw) {
+    return read_bytes(raw, 6);
+}
+unsigned long long read_8bytes(byte *raw) {
+    return read_bytes(raw, 8);
+}
+// ------------------
 
 typedef enum {
     ETYPE_IPv4,
@@ -64,8 +102,10 @@ typedef struct {
             mac_addr recver_mac_addr;
         };
     };
-    
+
 } ARP;
+
+
 
 typedef struct {
     unsigned int sender_port;
@@ -106,7 +146,6 @@ typedef struct {
         char *data;
     };
 } IPv4;
-
 
 typedef struct {
     mac_addr recver_mac;
@@ -162,7 +201,7 @@ int gen_udp_packet(UDP *udp, unsigned char *raw) {
     raw[6] = 0;
     raw[7] = 0;
 
-    memcpy(raw + 8, udp->data, udp->length - 8);
+    memcpy(raw + 8, udp->data, udp->length);
     return 0;
 }
 
@@ -400,7 +439,7 @@ UDP *parse_udp(unsigned char *raw) {
         addr = addr * 0x100 + raw[0 + i];
     }
     udp->sender_port = addr;
-    
+
     addr = 0;
     for (int i = 0; i < 2; i++) {
         addr = addr * 0x100 + raw[2 + i];
@@ -440,7 +479,7 @@ IPv4 *parse_ipv4(unsigned char *raw) {
         addr = addr * 0x100 + raw[16 + i];
     }
     ipv4->recver_addr = addr;
-    
+
     addr = 0;
     for (int i = 0; i < 1; i++) {
         addr = addr * 0x100 + raw[9 + i];
@@ -462,6 +501,140 @@ IPv4 *parse_ipv4(unsigned char *raw) {
     ipv4->length = addr;
 
     return ipv4;
+}
+
+int gen_dhcp_packet(DHCP *d, byte * buf) {
+    printf("%p, %p\n", d, buf);
+    save_big_endian(d->op, buf, 1);
+    save_big_endian(d->htype, buf + 1, 1);
+    save_big_endian(d->hlen, buf + 2, 1);
+    save_big_endian(d->ops, buf + 3, 1);
+    save_big_endian(d->xid, buf + 4, 4);
+    save_big_endian(d->secs, buf + 8, 2);
+    save_big_endian(d->flags, buf + 10, 2);
+    save_big_endian(d->ciaddr, buf + 12, 4);
+    save_big_endian(d->yiaddr, buf + 16, 4);
+    save_big_endian(d->siaddr, buf + 20, 4);
+    save_big_endian(d->giaddr, buf + 24, 4);
+    save_big_endian(d->chaddr, buf + 28, 6);
+
+    byte *options = buf + 28 + 16 + 64 + 128;
+    save_big_endian(0x63825363, options, 4);
+
+    save_big_endian(0x3501, options + 4, 2);
+    save_big_endian(d->type,  options + 6, 1);
+
+    save_big_endian(0x0104, options + 7, 2);
+    save_big_endian(0xffffff00, options + 9, 4);
+    
+    save_big_endian(0x0304, options + 13, 2);
+    save_big_endian(IPADDR, options + 15, 4);
+
+    save_big_endian(0x3304, options + 19, 2);
+    save_big_endian(8000, options + 21, 4);
+
+    save_big_endian(0x0604, options + 25, 2);
+    save_big_endian(IPADDR, options + 27, 4);
+    
+    save_big_endian(0x0f04, options + 31, 2);
+    save_big_endian(0x686f6765, options + 33, 4);
+
+
+
+    save_big_endian(0xff,  options + 37, 1);
+    return 28 + 16 + 64 + 128 + 64;
+}
+
+
+DHCP *parse_dhcp(byte *raw) {
+    DHCP *d =  (DHCP *)malloc(sizeof(DHCP));
+    memset(d, 0, sizeof(DHCP));
+
+    printf("raw: %p\n", raw);
+
+    d->op = read_byte(raw);
+    d->htype = read_byte(raw + 1);
+    d->hlen = read_byte(raw + 2);
+    d->ops = read_byte(raw + 3);
+    d->xid = read_4bytes(raw + 4);
+    d->secs = read_2bytes(raw + 8);
+    d->flags = read_2bytes(raw + 10);
+    d->ciaddr = read_4bytes(raw + 12);
+    d->yiaddr = read_4bytes(raw + 16);
+    d->siaddr = read_4bytes(raw + 20);
+    d->giaddr = read_4bytes(raw + 24);
+    d->chaddr = read_6bytes(raw + 28);
+
+    byte *options = raw + 28 + 16 + 64 + 128;
+    printf("Debug: magic is %x\n", read_4bytes(options));
+    options += 4;
+    int cnt = 0;
+    int idx = 0;
+    while (1) {
+        if (cnt >= 64) {
+            break;
+        }
+        byte type = read_byte(options);
+        if (type == 0xff) {
+            break;
+        }
+        if (type == 53) {
+            byte dhcp_type = read_byte(options + 2);
+            d->type = dhcp_type;
+            options += 3;
+            cnt += 3;
+        } else {
+            byte len = read_byte(options + 1);
+            byte *buf = (byte *)malloc(len);
+            memcpy(buf, options + 2, len);
+
+            d->options[idx].type = type;
+            d->options[idx].len = len;
+            d->options[idx].data = buf;
+            d->option_num++;
+            idx++;
+
+            options += len + 2;
+            cnt += len + 2;
+        }
+    }
+    return d;
+}
+
+void print_dhcp(DHCP *d) {
+    printf("[DHCP]\nType: ");
+    switch (d->type) {
+        case DHCPDiscover:
+            printf("Discover");
+            break;
+        case DHCPOffer:
+            printf("Offer");
+            break;
+        case DHCPRequest:
+            printf("Request");
+            break;
+        case DHCPAck:
+            printf("Ack");
+            break;
+        default:
+            printf("Unknown");
+    }
+
+    printf("\n");
+    printf("[OP]%d, [htype]%d, [hlen]%d,[hops] %d\n", d->op, d->htype, d->hlen,
+            d->ops);
+    printf("[SECS]%d, [FLAGS]%d\n", d->secs, d->flags);
+    printf("TRANID: %x\n", d->xid);
+    printf("CIADDR: %x\n", d->ciaddr);
+    printf("YIADDR: %x\n", d->yiaddr);
+    printf("SIADDR: %x\n", d->siaddr);
+    printf("GIADDR: %x\n", d->giaddr);
+    printf("HCADDR: %llx\n", d->chaddr);
+    for (int i = 0; i < d->option_num; i++) {
+        printf(" [TYPE] %x\n", d->options[i].type);
+        printf(" ");
+        dump_data_size(d->options[i].data, d->options[i].len);
+    }
 }
 
 Ethernet * parse_packet(unsigned char *raw) {
@@ -516,7 +689,7 @@ void print_udp_packet(UDP *udp) {
         printf("%c", udp->data[i]);
     }
     printf("\n");
-} 
+}
 
 void print_ipv4_packet(IPv4 *ipv4) {
     printf("Sender addr: %llx\n",  ipv4->sender_addr);
@@ -565,7 +738,7 @@ void print_arp_packet(ARP *arp) {
     // TBD
     printf("Sender Hardware Addr: %llx\n", arp->sender_mac_addr);
     printf("Sender Protocol Addr: %x\n", arp->sender_ip_addr);
-    
+
     printf("Receiver Hardware Addr: %llx\n", arp->recver_mac_addr);
     printf("Receiver Protocol Addr: %x\n", arp->recver_ip_addr);
 }
@@ -599,14 +772,14 @@ char *read_a_packet() {
   int rdt_tail_prev = read_reg_wrapper(RDT_OFFSET);
 
   // 怠惰
-  while ((rx_head_prev - 1) == rdt_tail_prev || 
+  while ((rx_head_prev - 1) == rdt_tail_prev ||
           (rx_head_prev == 0 && rdt_tail_prev == (ring_buffer_length - 1))) {
      rx_head_prev = read_reg_wrapper(RDH_OFFSET);
   }
 
   int next_rx = (rx_head_prev + delta_dt) % ring_buffer_length;
   write_reg_wrapper(RDT_OFFSET, next_rx);
-      
+
   while(1) {
       rx_head = read_reg_wrapper(RDH_OFFSET);
       if (rx_head != rx_head_prev) break;
@@ -641,14 +814,14 @@ int main(int argc, char const *argv[]) {
   print_log("initialize receive");
   init_receive();
   // TODO: set receive descriptor ring base address and length
-  /*  ----------------- 
+  /*  -----------------
      [0]
      [1]
      ...
-     [7] -> 
+     [7] ->
      -------------------
      [8] ->
-     [8 + 
+     [8 +
      ...
      [
    */
@@ -695,7 +868,6 @@ int main(int argc, char const *argv[]) {
       addr2[i].special = 0;
   }
 
-
   // setup buffer of rd and td
   buf_td = ring_base_addr_td + 16 * ring_buffer_length;
   buf_rd = ring_base_addr_rd + 16 * ring_buffer_length;
@@ -705,9 +877,10 @@ int main(int argc, char const *argv[]) {
   enable_interrupts(0xFFFFFFFF);
 
 
-  // wait until NIC send packet physically 
+  init_dhcp(IPADDR/0x100, IPADDR);
+  // wait until NIC send packet physically
   /* test send / recv */
-  
+
   /*
   char buf[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDCEFGHIJKLMNOPQRSTUVWXYZABCDEFG";
   for (int i = 0; i < 8; i++) {
@@ -731,7 +904,7 @@ int main(int argc, char const *argv[]) {
           dump_data(bufr);
       }
   }*/
-  
+
 
   // arp reqeuest / reply
   while(1) {
@@ -742,11 +915,11 @@ int main(int argc, char const *argv[]) {
           dump_data(bufr);
           mac_addr tmp = e->recver_mac;
           e->recver_mac = e->sender_mac;
-          e->sender_mac = 0xf8cab84be88b;
+          e->sender_mac = MACADDR;
           e->arp->sender_mac_addr = e->sender_mac;
           e->arp->recver_mac_addr = e->recver_mac;
           e->arp->recver_ip_addr = e->arp->sender_ip_addr;
-          e->arp->sender_ip_addr = 0xc0a8000b;
+          e->arp->sender_ip_addr = IPADDR;
           e->arp->operation = ARPOPERATION_REPLY;
 
           char buf[100];
@@ -759,25 +932,57 @@ int main(int argc, char const *argv[]) {
       }
       else if (e->type == ETYPE_IPv4) {
           print_packet(e);
+          char buf[1024];
+          memset(buf, 0, 1024);
+
           e->recver_mac = e->sender_mac;
-          e->sender_mac = 0xf8cab84be88b;
+          e->sender_mac = MACADDR;
 
           unsigned long long tmp = e->ipv4->sender_addr;
           e->ipv4->sender_addr = e->ipv4->recver_addr;
           e->ipv4->recver_addr = tmp;
-
           unsigned int tmp2 = e->ipv4->udp->sender_port;
           e->ipv4->udp->sender_port = e->ipv4->udp->recver_port;
           e->ipv4->udp->recver_port = tmp2;
 
+          UDP *udp = e->ipv4->udp;
+          if (udp->recver_port == 68) {
+              DHCP *dhcp = parse_dhcp(udp->data);
+              char dhcp_data[512];
+              memset(dhcp_data, 0, 512);
+              DHCP *d;
+              print_dhcp(dhcp);
+              dump_data(bufr);
+              switch(dhcp->type) {
+                  case DHCPDiscover:
+                      d = handle_discover(dhcp);
+                      int size = gen_dhcp_packet(d, dhcp_data);
+                      e->ipv4->udp->length = size;
+                      e->ipv4->udp->data = dhcp_data;
 
-          char buf[100];
-          memset(buf, 0, 100);
-          gen_ethernet_packet(e, buf);
-          write_a_packet(buf);
-          dump_data(bufr);
-          dump_data(buf);
-          print_packet(e);
+                      e->ipv4->length = size + 36;
+
+                      print_dhcp(parse_dhcp(dhcp_data));
+
+                      e->ipv4->sender_addr = IPADDR;
+                      e->ipv4->recver_addr = 0xffffffff;
+
+                      gen_ethernet_packet(e, buf);
+                      print_packet(e);
+                      write_a_packet(buf);
+                      dump_data(buf);
+                      break;
+                  default:
+                      printf("yata-\n");
+                      break;
+              }
+          } else {
+              gen_ethernet_packet(e, buf);
+              write_a_packet(buf);
+              dump_data(bufr);
+              dump_data(buf);
+              print_packet(e);
+          }
           printf("\n\n");
       }
       else {
